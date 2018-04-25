@@ -5,28 +5,28 @@ module atmos_model_mod
 !</CONTACT>
 !
 !<OVERVIEW>
-! Null atmosphere model. 
+! Null atmosphere model.
 !</OVERVIEW>
 !<DESCRIPTION>
-! Null atmosphere model. 
+! Null atmosphere model.
 !</DESCRIPTION>
 !
 !<NAMELIST NAME="atmos_model_nml">
 !  <DATA NAME="layout" TYPE="integer">
-!  Processor domain layout for atmos model. 
-!  </DATA> 
+!  Processor domain layout for atmos model.
+!  </DATA>
 !  <DATA NAME="mask_table" TYPE="character">
 !   A text file to specify n_mask, layout and mask_list to reduce number of processor
-!   usage by masking out some domain regions which contain all land points. 
-!   The default file name of mask_table is "INPUT/atmos_mask_table". Please note that 
-!   the file name must begin with "INPUT/". The first 
-!   line of mask_table will be number of region to be masked out. The second line 
+!   usage by masking out some domain regions which contain all land points.
+!   The default file name of mask_table is "INPUT/atmos_mask_table". Please note that
+!   the file name must begin with "INPUT/". The first
+!   line of mask_table will be number of region to be masked out. The second line
 !   of the mask_table will be the layout of the model. User need to set atmos_model_nml
 !   variable layout to be the same as the second line of the mask table.
 !   The following n_mask line will be the position of the processor to be masked out.
-!   The mask_table could be created by tools check_mask. 
-!   For example the mask_table will be as following if n_mask=2, layout=4,6 and 
-!   the processor (1,2) and (3,6) will be masked out. 
+!   The mask_table could be created by tools check_mask.
+!   For example the mask_table will be as following if n_mask=2, layout=4,6 and
+!   the processor (1,2) and (3,6) will be masked out.
 !     2
 !     4,6
 !     1,2
@@ -49,6 +49,9 @@ use mpp_domains_mod,   only : mpp_get_compute_domain, mpp_get_tile_id
 use mpp_domains_mod,   only : mpp_get_current_ntile
 use fms_mod,           only : field_exist, read_data, field_size, stdout, set_domain
 use fms_mod,           only : open_namelist_file, check_nml_error, file_exist, close_file
+use fms_mod,            only: open_restart_file
+use fms_io_mod,         only: restart_file_type, register_restart_field
+use fms_io_mod,         only: save_restart, restore_state, get_mosaic_tile_file
 use fms_io_mod,        only : parse_mask_table
 use time_manager_mod,  only : time_type
 use coupler_types_mod, only : coupler_2d_bc_type
@@ -100,7 +103,7 @@ end type surf_diff_type
 !<PUBLICTYPE >
  type atmos_data_type
      type (domain2d)               :: domain             ! domain decomposition
-     integer                       :: axes(4)            ! axis indices (returned by diag_manager) for the atmospheric grid 
+     integer                       :: axes(4)            ! axis indices (returned by diag_manager) for the atmospheric grid
                                                          ! (they correspond to the x, y, pfull, phalf axes)
      real, pointer, dimension(:,:) :: lon_bnd  => NULL() ! local longitude axis grid box boundaries in radians.
      real, pointer, dimension(:,:) :: lat_bnd  => NULL() ! local latitude axis grid box boundaries in radians.
@@ -110,8 +113,8 @@ end type surf_diff_type
      real, pointer, dimension(:,:) :: p_bot    => NULL() ! pressure at lowest model level
      real, pointer, dimension(:,:) :: u_bot    => NULL() ! zonal wind component at lowest model level
      real, pointer, dimension(:,:) :: v_bot    => NULL() ! meridional wind component at lowest model level
-     real, pointer, dimension(:,:) :: p_surf   => NULL() ! surface pressure 
-     real, pointer, dimension(:,:) :: slp      => NULL() ! sea level pressure 
+     real, pointer, dimension(:,:) :: p_surf   => NULL() ! surface pressure
+     real, pointer, dimension(:,:) :: slp      => NULL() ! sea level pressure
      real, pointer, dimension(:,:) :: gust     => NULL() ! gustiness factor
      real, pointer, dimension(:,:) :: coszen   => NULL() ! cosine of the zenith angle
      real, pointer, dimension(:,:) :: flux_sw  => NULL() ! net shortwave flux (W/m2) at the surface
@@ -159,7 +162,7 @@ type land_ice_atmos_boundary_type
    real, dimension(:,:),   pointer :: albedo_nir_dir =>NULL()
    real, dimension(:,:),   pointer :: albedo_vis_dif =>NULL()
    real, dimension(:,:),   pointer :: albedo_nir_dif =>NULL()
-   real, dimension(:,:),   pointer :: land_frac      =>NULL() ! fraction amount of land in a grid box 
+   real, dimension(:,:),   pointer :: land_frac      =>NULL() ! fraction amount of land in a grid box
    real, dimension(:,:),   pointer :: dt_t           =>NULL() ! temperature tendency at the lowest level
    real, dimension(:,:,:), pointer :: dt_tr          =>NULL() ! tracer tendency at the lowest level, including specific humidity
    real, dimension(:,:),   pointer :: u_flux         =>NULL() ! zonal wind stress
@@ -190,7 +193,7 @@ type :: ice_atmos_boundary_type
    real, dimension(:,:), pointer :: data =>NULL() ! quantities going from ice alone to atmos (none at present)
 end type ice_atmos_boundary_type
 !</PUBLICTYPE >
-  
+
 !-----------------------------------------------------------------------
 
 character(len=128) :: version = '$Id$'
@@ -200,8 +203,10 @@ character(len=128) :: tagname = '$Name$'
 integer :: layout(2)
 ! mask_table contains information for masking domain ( n_mask, layout and mask_list).
 character(len=128) :: mask_table = "INPUT/atmos_mask_table"
+logical :: use_restarts=.false. !this is only set to true if running a data driven land-ice model in concurrent mode
+type(restart_file_type), pointer, save :: Atm_restart => NULL()
 
-namelist /atmos_model_nml/ layout, mask_table
+namelist /atmos_model_nml/ layout, mask_table, use_restarts
 
 
 contains
@@ -210,7 +215,7 @@ contains
 ! <SUBROUTINE NAME="update_atmos_model_down">
 !
 ! <OVERVIEW>
-!   compute the atmospheric tendencies for dynamics, radiation, 
+!   compute the atmospheric tendencies for dynamics, radiation,
 !   vertical diffusion of momentum, tracers, and heat/moisture.
 ! </OVERVIEW>
 !
@@ -219,7 +224,7 @@ contains
 !   atmospheric tendencies for dynamics, radiation, vertical diffusion of
 !   momentum, tracers, and heat/moisture.  For heat/moisture only the
 !   downward sweep of the tridiagonal elimination is performed, hence
-!   the name "_down". 
+!   the name "_down".
 !</DESCRIPTION>
 
 !   <TEMPLATE>
@@ -227,7 +232,7 @@ contains
 !   </TEMPLATE>
 
 ! <IN NAME = "Surface_boundary" TYPE="type(land_ice_atmos_boundary_type)">
-!   Derived-type variable that contains quantities going from land+ice to atmos.  
+!   Derived-type variable that contains quantities going from land+ice to atmos.
 ! </IN>
 
 ! <IN NAME="Atmos" TYPE="type(atmos_data_type)">
@@ -265,7 +270,7 @@ end subroutine update_atmos_model_down
 !   Called every time step as the atmospheric driver to finish the upward
 !   sweep of the tridiagonal elimination for heat/moisture and compute the
 !   convective and large-scale tendencies.  The atmospheric variables are
-!   advanced one time step and tendencies set back to zero. 
+!   advanced one time step and tendencies set back to zero.
 !</DESCRIPTION>
 
 ! <TEMPLATE>
@@ -273,7 +278,7 @@ end subroutine update_atmos_model_down
 ! </TEMPLATE>
 
 ! <IN NAME = "Surface_boundary" TYPE="type(land_ice_atmos_boundary_type)">
-!   Derived-type variable that contains quantities going from land+ice to atmos.  
+!   Derived-type variable that contains quantities going from land+ice to atmos.
 ! </IN>
 
 ! <IN NAME="Atmos" TYPE="type(atmos_data_type)">
@@ -292,7 +297,7 @@ subroutine update_atmos_model_up( Surface_boundary, Atmos )
 
    type(land_ice_atmos_boundary_type), intent(in) :: Surface_boundary
    type (atmos_data_type), intent(in) :: Atmos
-   
+
    return
 
 end subroutine update_atmos_model_up
@@ -324,7 +329,7 @@ end subroutine update_atmos_model_dynamics
 
 ! <DESCRIPTION>
 !     This routine allocates storage and returns a variable of type
-!     atmos_boundary_data_type, and also reads a namelist input and restart file. 
+!     atmos_boundary_data_type, and also reads a namelist input and restart file.
 ! </DESCRIPTION>
 
 ! <TEMPLATE>
@@ -356,10 +361,12 @@ logical, intent(in)                   :: do_concurrent_radiation
 real, dimension(:,:), allocatable     :: glon, glat, glon_bnd, glat_bnd
 integer, dimension(:), allocatable    :: tile_ids
 real, dimension(:,:),  allocatable    :: area
-integer                               :: is, ie, js, je, i
+integer                               :: is, ie, js, je, i, ipts, jpts, dto
 integer                               :: nlon, nlat, ntile, tile
 integer                               :: ntracers, ntprog, ndiag
 integer                               :: namelist_unit, io, ierr, stdoutunit
+integer                               :: id_restart
+character(len=128)                    :: filename
 
 !--- read namelist
 #ifdef INTERNAL_FILE_NML
@@ -380,7 +387,7 @@ stdoutunit = stdout()
 Atmos % Time_init = Time_init
 Atmos % Time      = Time
 Atmos % Time_step = Time_step
- 
+
 call get_grid_ntiles('ATM',ntile)
 call get_grid_size('ATM',1,nlon,nlat)
 
@@ -439,13 +446,13 @@ if(ntile==1) then
         set_name='atmos',domain2 = Atmos%domain)
 
    Atmos%axes(2) = diag_axis_init('lat',glat(1,:),'degrees_N','Y','latitude',&
-        set_name='atmos',domain2 = Atmos%domain)  
+        set_name='atmos',domain2 = Atmos%domain)
 else
    Atmos%axes(1) = diag_axis_init('lon',(/(real(i),i=1,nlon)/),'degrees_E','X','longitude',&
         set_name='atmos',domain2 = Atmos%domain)
 
    Atmos%axes(2) = diag_axis_init('lat',(/(real(i),i=1,nlat)/),'degrees_N','Y','latitude',&
-        set_name='atmos',domain2 = Atmos%domain)  
+        set_name='atmos',domain2 = Atmos%domain)
 endif
 
 call register_tracers(MODEL_LAND, ntracers, ntprog, ndiag)
@@ -486,13 +493,13 @@ Atmos % coszen = 0.0
 Atmos % flux_sw = 0.0
 Atmos % flux_lw = 0.0
 Atmos % flux_sw_dir = 0.0
-Atmos % flux_sw_dif = 0.0 
-Atmos % flux_sw_down_vis_dir = 0.0 
-Atmos % flux_sw_down_vis_dif = 0.0 
+Atmos % flux_sw_dif = 0.0
+Atmos % flux_sw_down_vis_dir = 0.0
+Atmos % flux_sw_down_vis_dif = 0.0
 Atmos % flux_sw_down_total_dir = 0.0
 Atmos % flux_sw_down_total_dif = 0.0
-Atmos % flux_sw_vis = 0.0 
-Atmos % flux_sw_vis_dir = 0.0 
+Atmos % flux_sw_vis = 0.0
+Atmos % flux_sw_vis_dir = 0.0
 Atmos % flux_sw_vis_dif = 0.0
 Atmos % lprec = 0.0
 Atmos % fprec = 0.0
@@ -526,7 +533,7 @@ allocate ( Atmos % grid % en1   (3, is:ie  , js:je+1))
 allocate ( Atmos % grid % en2   (3, is:ie+1, js:je  ))
 allocate ( Atmos % grid % vlon  (3, is:ie  , js:je  ))
 allocate ( Atmos % grid % vlat  (3, is:ie  , js:je  ))
-     
+
 Atmos % grid % dx    = 1.0
 Atmos % grid % dy    = 1.0
 Atmos % grid % area  = 1.0
@@ -544,6 +551,19 @@ call diag_integral_init (Atmos % Time_init, Atmos % Time,  &
                          Atmos % lat_bnd(:,:), area)
 
 call set_domain(Atmos%domain)
+
+if (use_restarts) then
+  allocate(Atm_restart)
+  filename='atmos_coupled.res.nc'
+  id_restart = register_restart_field(Atm_restart,filename,'glon_bnd',ipts,domain=Atmos%domain)
+  id_restart = register_restart_field(Atm_restart,filename,'glat_bnd',jpts,domain=Atmos%domain)
+  id_restart = register_restart_field(Atm_restart,filename,'dt',dto,domain=Atmos%domain)
+  id_restart = register_restart_field(Atm_restart, filename, 'lprec', Atmos % lprec, domain=Atmos%domain)
+  id_restart = register_restart_field(Atm_restart, filename, 'fprec', Atmos % fprec, domain=Atmos%domain)
+  id_restart = register_restart_field(Atm_restart, filename, 'gust',  Atmos % gust,  domain=Atmos%domain)
+  filename='INPUT/atmos_coupled.res.nc'
+  if (file_exist(filename, domain=Atmos%domain)) call restore_state(Atm_restart)
+endif
 
 end subroutine atmos_model_init
 ! </SUBROUTINE>
@@ -572,6 +592,8 @@ end subroutine atmos_model_init
 subroutine atmos_model_end (Atmos)
 
 type (atmos_data_type), intent(in) :: Atmos
+
+if (use_restarts) call save_restart(Atm_restart)
 
 return
 
@@ -629,7 +651,7 @@ end subroutine atm_stock_pe
 ! </IN>
 !
 subroutine atmos_data_type_chksum(id, timestep, atm)
-type(atmos_data_type), intent(in) :: atm 
+type(atmos_data_type), intent(in) :: atm
     character(len=*), intent(in) :: id
     integer         , intent(in) :: timestep
     integer :: n, outunit
