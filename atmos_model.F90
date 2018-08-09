@@ -575,9 +575,9 @@ call set_domain(Atmos%domain)
 if (use_restarts) then
   allocate(Atm_restart)
   filename='atmos_coupled.res.nc'
-  id_restart = register_restart_field(Atm_restart,filename,'glon_bnd',ipts,domain=Atmos%domain)
-  id_restart = register_restart_field(Atm_restart,filename,'glat_bnd',jpts,domain=Atmos%domain)
-  id_restart = register_restart_field(Atm_restart,filename,'dt',dto,domain=Atmos%domain)
+!  id_restart = register_restart_field(Atm_restart,filename,'glon_bnd',ipts,domain=Atmos%domain)
+!  id_restart = register_restart_field(Atm_restart,filename,'glat_bnd',jpts,domain=Atmos%domain)
+!  id_restart = register_restart_field(Atm_restart,filename,'dt',dto,domain=Atmos%domain)
   id_restart = register_restart_field(Atm_restart, filename, 'lprec', Atmos % lprec, domain=Atmos%domain)
   id_restart = register_restart_field(Atm_restart, filename, 'fprec', Atmos % fprec, domain=Atmos%domain)
   id_restart = register_restart_field(Atm_restart, filename, 'gust',  Atmos % gust,  domain=Atmos%domain)
