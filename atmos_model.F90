@@ -60,7 +60,7 @@ module atmos_model_mod
 
 
 use mpp_mod,           only : mpp_npes, mpp_pe, mpp_error, FATAL, mpp_chksum
-use mpp_mod,           only : input_nml_file
+use mpp_mod,           only : input_nml_file, mpp_root_pe
 
 use mpp_domains_mod,   only : domain2d
 use mpp_domains_mod,   only : mpp_define_layout, mpp_define_domains
@@ -81,7 +81,7 @@ use mosaic_mod,        only : get_mosaic_ntiles
 use xgrid_mod,         only : grid_box_type
 use grid_mod,          only : get_grid_ntiles, define_cube_mosaic
 use grid_mod,          only : get_grid_size, get_grid_cell_vertices
-use grid_mod,          only : get_grid_cell_centers
+use grid_mod,          only : get_grid_cell_centers, get_grid_cell_area
 use diag_integral_mod, only : diag_integral_init
 use tracer_manager_mod,only : register_tracers
 use field_manager_mod, only : MODEL_LAND
@@ -172,6 +172,7 @@ end type surf_diff_type
 type land_ice_atmos_boundary_type
    ! variables of this type are declared by coupler_main, allocated by flux_exchange_init.
 !quantities going from land+ice to atmos
+   integer :: isphum                                          ! tracer index for specific humidity
    real, dimension(:,:),   pointer :: t              =>NULL() ! surface temperature for radiation calculations
    real, dimension(:,:),   pointer :: t_ref          =>null() ! surface air temperature (cjg: PBL depth mods)
    real, dimension(:,:),   pointer :: q_ref          =>null() ! surface air specific humidity (cjg: PBL depth mods)
@@ -446,9 +447,9 @@ allocate ( glon_bnd(nlon+1,nlat+1))
 allocate ( glat_bnd(nlon+1,nlat+1))
 allocate ( glon(nlon, nlat))
 allocate ( glat(nlon, nlat))
-allocate ( Atmos%lon_bnd(ie-is+2,je-js+2) )
-allocate ( Atmos%lat_bnd(ie-is+2,je-js+2) )
-allocate ( area(ie-is+1,je-js+1) )
+allocate ( Atmos%lon_bnd(is:ie+1,js:je+1) )
+allocate ( Atmos%lat_bnd(is:ie+1,js:je+1) )
+allocate ( area(nlon,nlat) )
 
 allocate(tile_ids(mpp_get_current_ntile(Atmos%domain)))
 tile_ids = mpp_get_tile_id(Atmos%domain)
@@ -458,8 +459,11 @@ deallocate(tile_ids)
 call get_grid_cell_vertices('ATM',tile,glon_bnd,glat_bnd)
 call get_grid_cell_centers ('ATM',tile,glon, glat)
 
-Atmos % lon_bnd(:,:) = glon_bnd(is:ie+1, js:je+1)*atan(1.0)/45.0
-Atmos % lat_bnd(:,:) = glat_bnd(is:ie+1, js:je+1)*atan(1.0)/45.0
+
+Atmos % lon_bnd(is:ie+1, js:je+1) = glon_bnd(is:ie+1, js:je+1)*atan(1.0)/45.0
+Atmos % lat_bnd(is:ie+1, js:je+1) = glat_bnd(is:ie+1, js:je+1)*atan(1.0)/45.0
+
+call get_grid_cell_area('ATM',tile,area)
 
 if(ntile==1) then
    Atmos%axes(1) = diag_axis_init('lon',glon(:,1),'degrees_E','X','longitude',&
@@ -540,8 +544,6 @@ Atmos % Surf_diff % delta_v  = 0.0
 Atmos % Surf_diff % dflux_tr = 0.0
 Atmos % Surf_diff % delta_tr = 0.0
 
-area = 0.0
-
 allocate ( Atmos % grid % dx    (   is:ie  , js:je+1))
 allocate ( Atmos % grid % dy    (   is:ie+1, js:je  ))
 allocate ( Atmos % grid % area  (   is:ie  , js:je  ))
@@ -554,9 +556,9 @@ allocate ( Atmos % grid % en2   (3, is:ie+1, js:je  ))
 allocate ( Atmos % grid % vlon  (3, is:ie  , js:je  ))
 allocate ( Atmos % grid % vlat  (3, is:ie  , js:je  ))
 
-Atmos % grid % dx    = 1.0
-Atmos % grid % dy    = 1.0
-Atmos % grid % area  = 1.0
+Atmos % grid % dx(is:ie,js:je+1)    = 1.0
+Atmos % grid % dy(is:ie+1,js:je)    = 1.0
+Atmos % grid % area(is:ie,js:je)  = area(is:ie,js:je)
 Atmos % grid % edge_w= 0.0
 Atmos % grid % edge_e= 1.0
 Atmos % grid % edge_s= 0.0
